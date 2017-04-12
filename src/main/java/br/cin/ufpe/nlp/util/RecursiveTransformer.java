@@ -17,19 +17,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import br.cin.ufpe.nlp.api.transform.DocumentProcessor;
+import br.cin.ufpe.nlp.api.transform.DocumentProcessorNToOne;
 import br.cin.ufpe.nlp.api.transform.DocumentProcessorOneToN;
 
 public class RecursiveTransformer {
 
 	private static ExecutorService exec = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-	
+
 	private static Logger logger = LoggerFactory.getLogger(RecursiveTransformer.class);
-	
+
 	public static synchronized void recursiveProcess(File baseInputPath, final File[] baseOutputPaths,
 			final DocumentProcessorOneToN docProcessor, double keepPercent) throws IOException {
 		try {
-			recursiveProcess(baseInputPath, baseOutputPaths,
-					docProcessor, keepPercent, 0);
+			recursiveProcess(baseInputPath, baseOutputPaths, docProcessor, keepPercent, 0);
 		} finally {
 			try {
 				exec.shutdown();
@@ -43,7 +43,6 @@ public class RecursiveTransformer {
 			}
 		}
 	}
-	
 
 	private static void recursiveProcess(File baseInputPath, final File[] baseOutputPaths,
 			final DocumentProcessorOneToN docProcessor, double keepPercent, final int level) throws IOException {
@@ -59,7 +58,7 @@ public class RecursiveTransformer {
 					newDir[i] = new File(baseOutputPaths[i].getCanonicalFile().toString() + File.separator + name);
 					newDir[i].mkdir();
 				}
-				recursiveProcess(file, newDir, docProcessor, keepPercent, level+1);
+				recursiveProcess(file, newDir, docProcessor, keepPercent, level + 1);
 			} else {
 				if (elimIndices == null || !elimIndices.contains(elimFileIndex)) {
 					exec.submit(new Runnable() {
@@ -67,7 +66,8 @@ public class RecursiveTransformer {
 							try {
 								processOneFileMultiOutput(baseOutputPaths, docProcessor, file, name);
 							} catch (IOException e) {
-								throw new IllegalStateException("Error processing file " + file.getAbsolutePath() + "at level " + level, e);
+								throw new IllegalStateException(
+										"Error processing file " + file.getAbsolutePath() + "at level " + level, e);
 							} catch (Throwable t) {
 								logger.error("Error while trying to process file", t);
 								throw new IllegalStateException("Error while trying to process file", t);
@@ -116,6 +116,83 @@ public class RecursiveTransformer {
 			}
 		}
 
+	}
+
+	public static synchronized void recursiveProcess(File[] baseInputPaths, final File baseOutputPath,
+			final DocumentProcessorNToOne docProcessor, double keepPercent) throws IOException {
+		try {
+			_recursiveProcess(baseInputPaths, baseOutputPath, docProcessor, keepPercent);
+		} finally {
+			try {
+				exec.shutdown();
+				exec.awaitTermination(100, TimeUnit.DAYS);
+				logger.info("Finished recursiveProcess (multiple inputs, one input)");
+				exec = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+				logger.error("Could not process files", e);
+				throw new IllegalStateException("Could not process files", e);
+			}
+		}
+	}
+
+	private static void _recursiveProcess(File[] baseInputPaths, final File baseOutputPath,
+			final DocumentProcessorNToOne docProcessor, double keepPercent) throws IOException {
+
+		File[] stuffToProcess = baseInputPaths[0].listFiles();
+		Set<Integer> elimIndices = elimIndices(keepPercent, stuffToProcess);
+
+		int elimFileIndex = 0;
+		for (File file : stuffToProcess) {
+			final String name = file.getName();
+			if (file.isDirectory()) {
+				final File newDir = new File(baseOutputPath.getCanonicalFile().toString() + File.separator + name);
+				newDir.mkdir();
+				File[] newBaseInputPaths = new File[baseInputPaths.length];
+				newBaseInputPaths[0] = file;
+				for (int i = 1; i < baseInputPaths.length; i++) {
+					newBaseInputPaths[i] = new File(baseInputPaths[i], file.getName());
+				}
+				_recursiveProcess(newBaseInputPaths, newDir, docProcessor, keepPercent);
+			} else {
+				if (elimIndices == null || !elimIndices.contains(elimFileIndex)) {
+					final File[] filesToProcess = new File[baseInputPaths.length];
+					filesToProcess[0] = file;
+					for (int i = 1; i < baseInputPaths.length; i++) {
+						filesToProcess[i] = new File(baseInputPaths[i], file.getName());
+					}
+					exec.submit(new Runnable() {
+						public void run() {
+							try {
+								processMirrorFiles(baseOutputPath, docProcessor, filesToProcess, name);
+							} catch (IOException e) {
+								throw new IllegalStateException(
+										"Error processing file " + filesToProcess[0].getAbsolutePath(), e);
+							} catch (Throwable t) {
+								logger.error("Error while trying to process file", t);
+								throw new IllegalStateException("Error while trying to process file", t);
+							}
+						}
+					});
+				}
+				elimFileIndex++;
+			}
+		}
+	}
+
+	private static void processMirrorFiles(File baseOutputPath, DocumentProcessorNToOne docProcessor, File[] inputFiles,
+			String name) throws FileNotFoundException, IOException {
+		BufferedReader bufr[] = new BufferedReader[inputFiles.length];
+		for (int i = 0; i < bufr.length; i++) {
+			bufr[i] = new BufferedReader(new FileReader(inputFiles[i]));
+		}
+		BufferedWriter bufw = new BufferedWriter(
+				new FileWriter(new File(baseOutputPath.getCanonicalPath() + File.separator + name)));
+
+		docProcessor.processDocument(bufr, bufw);
+		bufw.close();
+		for (int i = 0; i < bufr.length; i++)
+			bufr[i].close();
 	}
 
 	private static void processOneFile(File baseOutputPath, DocumentProcessor docProcessor, File file,
